@@ -1,4 +1,4 @@
-name: Generate AI-generated proposals San Leucio
+name: Generate rule-based proposals San Leucio
 
 on:
   workflow_dispatch:
