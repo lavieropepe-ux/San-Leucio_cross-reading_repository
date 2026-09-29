@@ -1,4 +1,3 @@
 supabase
 pypdf
 python-dotenv
-openai
