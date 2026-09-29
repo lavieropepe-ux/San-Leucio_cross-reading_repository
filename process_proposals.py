@@ -1,10 +1,9 @@
 import hashlib
-import json
 import os
 import re
+from collections import defaultdict
 from typing import Optional
 
-from openai import OpenAI
 from supabase import create_client, Client
 
 
@@ -17,33 +16,16 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv(
     "SUPABASE_SERVICE_ROLE_KEY"
 )
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-OPENAI_MODEL = os.getenv(
-    "OPENAI_MODEL",
-    "gpt-5.6-luna"
-)
-
-
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise ValueError(
         "SUPABASE_URL / "
         "SUPABASE_SERVICE_ROLE_KEY mancanti."
     )
 
-if not OPENAI_API_KEY:
-    raise ValueError(
-        "OPENAI_API_KEY mancante."
-    )
-
 
 supabase: Client = create_client(
     SUPABASE_URL,
     SUPABASE_SERVICE_ROLE_KEY
-)
-
-openai_client = OpenAI(
-    api_key=OPENAI_API_KEY
 )
 
 
@@ -54,54 +36,288 @@ openai_client = OpenAI(
 DOCUMENTS_TABLE = "documents"
 EVIDENCE_TABLE = "evidence"
 
-COMPONENT_PROPOSALS_TABLE = (
-    "component_proposals"
-)
-
+COMPONENT_PROPOSALS_TABLE = "component_proposals"
 COMPONENT_PROPOSAL_EVIDENCE_TABLE = (
     "component_proposal_evidence"
 )
 
-PHASE_PROPOSALS_TABLE = (
-    "phase_proposals"
-)
-
+PHASE_PROPOSALS_TABLE = "phase_proposals"
 PHASE_PROPOSAL_EVIDENCE_TABLE = (
     "phase_proposal_evidence"
 )
 
 
 # ============================================================
-# CONFIGURAZIONE PIPELINE
+# PRINCIPIO METODOLOGICO
 # ============================================================
 #
-# Questo script realizza ESCLUSIVAMENTE:
+# Questo script NON usa API AI / LLM.
 #
-# DOCUMENTS + EVIDENCE
-#          ↓
-#     CROSS-READING AI
-#          ↓
-# COMPONENT_PROPOSALS
-# PHASE_PROPOSALS
+# Produce PROPOSTE AUTOMATICHE RULE-BASED
+# a partire esclusivamente dalle evidence presenti
+# in Supabase.
 #
 # Non crea:
 # - components
 # - phases
 #
-# Non valida niente.
+# Non valida nulla.
 #
-# Tutte le proposte entrano con:
+# Tutte le proposte entrano come:
 #
 # review_status = to_review
 #
 # ============================================================
 
 
-# Evitiamo prompt giganteschi.
-# Se le evidence sono numerose vengono analizzate a gruppi
-# e successivamente consolidate.
+GENERATOR_NAME = "rule_based_v1"
 
-MAX_CHARS_PER_BATCH = 70000
+
+# ============================================================
+# VOCABOLARIO CONTROLLATO PER COMPONENTI
+# ============================================================
+#
+# Serve esclusivamente per normalizzare alcune denominazioni
+# documentarie.
+#
+# Non significa che l'equivalenza sia storicamente certa:
+# il risultato resta una proposta da validare.
+#
+# ============================================================
+
+COMPONENT_NORMALIZATION = {
+
+    # Complessi / edifici / spazi
+    "belvedere": "Belvedere",
+    "filanda": "Filanda",
+    "filanda reale": "Filanda Reale",
+    "gran filanda": "Gran Filanda",
+    "setificio": "Setificio",
+    "setificio di san leucio": "Setificio di San Leucio",
+    "opificio": "Opificio",
+    "opificio borbonico": "Opificio borbonico",
+    "fabbrica della seta": "Fabbrica della seta",
+
+    "salone": "Salone",
+    "salone reale": "Salone Reale",
+    "salone del belvedere": "Salone del Belvedere",
+    "gran salone": "Gran Salone",
+    "sala del trono": "Sala del Trono",
+
+    "residenza reale": "Residenza reale",
+    "appartamento del re": "Appartamento del Re",
+    "stanze reali": "Stanze reali",
+    "alloggi degli operai": "Alloggi degli operai",
+
+    "quartiere san ferdinando":
+        "Quartiere San Ferdinando",
+
+    # Infrastrutture / acqua
+    "acquedotto": "Acquedotto",
+    "acquedotto carolino": "Acquedotto Carolino",
+    "bagno grande": "Bagno Grande",
+    "fontana": "Fontana",
+    "vasca": "Vasca",
+    "canale": "Canale",
+    "condotto": "Condotto",
+    "cavedio": "Cavedio",
+
+    # Spazi aperti
+    "cortile": "Cortile",
+    "giardino": "Giardino",
+    "strada": "Strada",
+    "piazza": "Piazza",
+
+    # Elementi produttivi
+    "trattaglio": "Trattaglio",
+    "telaio": "Telaio",
+}
+
+
+# ============================================================
+# TERMINI TROPPO GENERICI
+# ============================================================
+#
+# Possono essere conservati nelle evidence,
+# ma non diventano automaticamente componenti.
+#
+# ============================================================
+
+GENERIC_ELEMENTS = {
+    "volta",
+    "volta a botte",
+    "volta a padiglione",
+    "arco",
+    "muratura",
+    "muro",
+    "pilastro",
+    "colonna",
+    "scalinata",
+    "scalone",
+    "scala",
+    "portico",
+    "terrazza",
+    "facciata",
+    "prospetto",
+    "copertura",
+    "bagno",
+    "trattura",
+    "tessitura",
+}
+
+
+# ============================================================
+# CLASSIFICAZIONE RULE-BASED
+# ============================================================
+
+BUILDING_ELEMENTS = {
+    "belvedere",
+    "filanda",
+    "filanda reale",
+    "gran filanda",
+    "setificio",
+    "setificio di san leucio",
+    "opificio",
+    "opificio borbonico",
+    "fabbrica della seta",
+    "residenza reale",
+}
+
+SPACE_ELEMENTS = {
+    "salone",
+    "salone reale",
+    "salone del belvedere",
+    "gran salone",
+    "sala del trono",
+    "appartamento del re",
+    "stanze reali",
+    "alloggi degli operai",
+    "cortile",
+    "giardino",
+    "piazza",
+}
+
+INFRASTRUCTURE_ELEMENTS = {
+    "acquedotto",
+    "acquedotto carolino",
+    "fontana",
+    "vasca",
+    "canale",
+    "condotto",
+    "cavedio",
+    "strada",
+}
+
+PRODUCTIVE_ELEMENTS = {
+    "trattaglio",
+    "telaio",
+}
+
+TERRITORIAL_ELEMENTS = {
+    "quartiere san ferdinando",
+}
+
+
+# ============================================================
+# UTILITÀ
+# ============================================================
+
+def normalize_text(value) -> str:
+
+    if value is None:
+        return ""
+
+    return re.sub(
+        r"\s+",
+        " ",
+        str(value).strip().lower()
+    )
+
+
+def safe_year(value) -> Optional[int]:
+
+    if value in (
+        None,
+        "",
+        "null"
+    ):
+        return None
+
+    try:
+        return int(value)
+
+    except (
+        TypeError,
+        ValueError
+    ):
+        return None
+
+
+def split_elements(element_value) -> list[str]:
+    """
+    main.py salva eventuali elementi multipli
+    separati da virgole.
+    """
+
+    if not element_value:
+        return []
+
+    result = []
+
+    for value in str(element_value).split(","):
+
+        normalized = normalize_text(value)
+
+        if normalized:
+            result.append(normalized)
+
+    return sorted(set(result))
+
+
+def classify_component(
+    canonical_element: str
+) -> tuple[str, str, str]:
+
+    if canonical_element in BUILDING_ELEMENTS:
+        return (
+            "building",
+            "architectural",
+            "building"
+        )
+
+    if canonical_element in SPACE_ELEMENTS:
+        return (
+            "space",
+            "architectural",
+            "space"
+        )
+
+    if canonical_element in INFRASTRUCTURE_ELEMENTS:
+        return (
+            "infrastructure",
+            "infrastructural",
+            "system"
+        )
+
+    if canonical_element in PRODUCTIVE_ELEMENTS:
+        return (
+            "productive_element",
+            "productive",
+            "element"
+        )
+
+    if canonical_element in TERRITORIAL_ELEMENTS:
+        return (
+            "urban_sector",
+            "territorial",
+            "district"
+        )
+
+    return (
+        "documented_element",
+        "undetermined",
+        "element"
+    )
 
 
 # ============================================================
@@ -109,11 +325,6 @@ MAX_CHARS_PER_BATCH = 70000
 # ============================================================
 
 def get_documents() -> dict:
-    """
-    Restituisce un dizionario:
-
-    document_id -> metadati della fonte
-    """
 
     response = (
         supabase
@@ -124,19 +335,16 @@ def get_documents() -> dict:
             "author,"
             "source_date,"
             "source_type,"
-            "source_status,"
             "historical_period,"
             "file_path"
         )
         .execute()
     )
 
-    documents = {}
-
-    for row in response.data or []:
-        documents[row["id"]] = row
-
-    return documents
+    return {
+        row["id"]: row
+        for row in response.data or []
+    }
 
 
 # ============================================================
@@ -144,14 +352,6 @@ def get_documents() -> dict:
 # ============================================================
 
 def get_all_evidence() -> list[dict]:
-    """
-    Recupera tutte le evidence non esplicitamente rejected.
-
-    Le evidence possono essere ancora to_review:
-    servono come materiale documentario per formulare
-    proposte che saranno successivamente controllate
-    dal ricercatore.
-    """
 
     all_rows = []
 
@@ -206,651 +406,328 @@ def get_all_evidence() -> list[dict]:
 
 
 # ============================================================
-# PREPARAZIONE CORPUS PER IA
+# COMPONENT PROPOSALS
 # ============================================================
 
-def build_ai_evidence(
-    evidence_rows: list[dict],
-    documents: dict
+def generate_component_proposals(
+    evidence_rows: list[dict]
 ) -> list[dict]:
 
-    prepared = []
+    groups = defaultdict(list)
 
     for evidence in evidence_rows:
 
-        document = documents.get(
-            evidence.get("document_id"),
-            {}
+        for element in split_elements(
+            evidence.get("element")
+        ):
+
+            if element in GENERIC_ELEMENTS:
+                continue
+
+            if element not in COMPONENT_NORMALIZATION:
+                continue
+
+            groups[element].append(
+                evidence
+            )
+
+    proposals = []
+
+    for canonical_element, rows in groups.items():
+
+        evidence_ids = sorted({
+            row["id"]
+            for row in rows
+        })
+
+        document_ids = {
+            row.get("document_id")
+            for row in rows
+            if row.get("document_id")
+        }
+
+        proposed_type, category, spatial_level = (
+            classify_component(
+                canonical_element
+            )
         )
 
-        prepared.append(
+        proposed_name = (
+            COMPONENT_NORMALIZATION[
+                canonical_element
+            ]
+        )
+
+        evidence_count = len(evidence_ids)
+        source_count = len(document_ids)
+
+        # Confidence = solidità del supporto documentario,
+        # NON probabilità di verità storica.
+        confidence = min(
+            1.0,
+            0.40
+            + min(evidence_count, 5) * 0.08
+            + min(source_count, 3) * 0.08
+        )
+
+        reason = (
+            "Proposta rule-based ottenuta raggruppando "
+            f"{evidence_count} evidence relative al termine "
+            f"documentario '{canonical_element}', "
+            f"provenienti da {source_count} fonte/i. "
+            "La corrispondenza deve essere verificata "
+            "dal ricercatore."
+        )
+
+        proposals.append(
             {
-                "evidence_id":
-                    evidence["id"],
+                # Chiave interna deterministica.
+                # NON è proposed_name.
+                "canonical_key":
+                    canonical_element,
 
-                "document_id":
-                    evidence.get(
-                        "document_id"
+                "proposed_name":
+                    proposed_name,
+
+                "proposed_type":
+                    proposed_type,
+
+                "category":
+                    category,
+
+                "spatial_level":
+                    spatial_level,
+
+                "description":
+                    (
+                        "Componente candidato emerso "
+                        "dal raggruppamento automatico "
+                        "delle evidence documentarie."
                     ),
 
-                "document_title":
-                    document.get("title"),
+                "confidence":
+                    round(confidence, 3),
 
-                "document_author":
-                    document.get("author"),
+                "reason":
+                    reason,
 
-                "document_date":
-                    document.get(
-                        "source_date"
-                    ),
-
-                "document_type":
-                    document.get(
-                        "source_type"
-                    ),
-
-                "historical_period":
-                    document.get(
-                        "historical_period"
-                    ),
-
-                "page":
-                    evidence.get(
-                        "page_reference"
-                    ),
-
-                "excerpt":
-                    evidence.get(
-                        "source_excerpt"
-                    ),
-
-                "objective_information":
-                    evidence.get(
-                        "objective_information"
-                    ),
-
-                "element":
-                    evidence.get(
-                        "element"
-                    ),
-
-                "temporal_reference":
-                    evidence.get(
-                        "temporal_reference"
-                    ),
-
-                "start_year":
-                    evidence.get(
-                        "start_year"
-                    ),
-
-                "end_year":
-                    evidence.get(
-                        "end_year"
-                    ),
-
-                "temporal_precision":
-                    evidence.get(
-                        "temporal_precision"
-                    ),
-
-                "transformation":
-                    evidence.get(
-                        "transformation_type"
-                    ),
-
-                "spatial_information":
-                    evidence.get(
-                        "spatial_information"
-                    ),
-
-                "spatial_relation":
-                    evidence.get(
-                        "spatial_relation"
-                    ),
-
-                "location_description":
-                    evidence.get(
-                        "location_description"
-                    ),
+                "evidence_ids":
+                    evidence_ids,
             }
         )
 
-    return prepared
+    return proposals
 
 
 # ============================================================
-# CREAZIONE BATCH
+# PHASE PROPOSALS
+# ============================================================
+#
+# Una data isolata NON diventa una fase.
+#
+# Una proposta viene prodotta solo quando esiste almeno
+# un minimo di coerenza documentaria.
+#
 # ============================================================
 
-def split_into_batches(
+def generate_phase_proposals(
     evidence_rows: list[dict]
-) -> list[list[dict]]:
+) -> list[dict]:
 
-    batches = []
-
-    current_batch = []
-    current_chars = 0
+    groups = defaultdict(list)
 
     for evidence in evidence_rows:
 
-        serialized = json.dumps(
-            evidence,
-            ensure_ascii=False
+        start_year = safe_year(
+            evidence.get("start_year")
         )
 
-        item_chars = len(serialized)
+        end_year = safe_year(
+            evidence.get("end_year")
+        )
+
+        transformation = (
+            evidence.get(
+                "transformation_type"
+            )
+        )
 
         if (
-            current_batch
-            and current_chars + item_chars
-            > MAX_CHARS_PER_BATCH
+            start_year is None
+            and end_year is None
         ):
+            continue
 
-            batches.append(
-                current_batch
+        # Una data senza alcuna indicazione
+        # trasformativa non basta da sola.
+        if not transformation:
+            continue
+
+        groups[
+            (
+                start_year,
+                end_year
             )
-
-            current_batch = []
-            current_chars = 0
-
-        current_batch.append(
+        ].append(
             evidence
         )
 
-        current_chars += item_chars
+    proposals = []
 
-    if current_batch:
-        batches.append(
-            current_batch
-        )
+    for (
+        start_year,
+        end_year
+    ), rows in groups.items():
 
-    return batches
+        evidence_ids = sorted({
+            row["id"]
+            for row in rows
+        })
 
+        document_ids = {
+            row.get("document_id")
+            for row in rows
+            if row.get("document_id")
+        }
 
-# ============================================================
-# PROMPT DI ANALISI
-# ============================================================
+        transformations = sorted({
+            row.get(
+                "transformation_type"
+            )
+            for row in rows
+            if row.get(
+                "transformation_type"
+            )
+        })
 
-ANALYSIS_PROMPT = """
-Sei un assistente di ricerca che supporta
-un ricercatore umano nell'analisi
-storico-architettonica del Real Sito di San Leucio.
+        evidence_count = len(evidence_ids)
+        source_count = len(document_ids)
 
-Ricevi EVIDENCE DOCUMENTARIE estratte da fonti.
-
-Devi effettuare un cross-reading delle evidence
-e formulare esclusivamente PROPOSTE.
-
-Non devi stabilire verità definitive.
-
-============================================================
-OBIETTIVO 1 – COMPONENT PROPOSALS
-============================================================
-
-Individua possibili componenti del sistema
-architettonico, produttivo, infrastrutturale
-o territoriale.
-
-Un componente può essere, ad esempio:
-
-- complesso;
-- edificio;
-- corpo di fabbrica;
-- spazio;
-- ambiente;
-- infrastruttura;
-- elemento produttivo;
-- elemento architettonico significativo.
-
-ATTENZIONE:
-
-un termine presente nella fonte
-NON deve diventare automaticamente un componente.
-
-Ad esempio:
-
-- una generica "volta"
-- una generica "muratura"
-- un verbo
-- un processo
-
-non devono necessariamente diventare componenti autonomi.
-
-Devi usare il contesto delle evidence.
-
-Denominazioni differenti possono riferirsi
-alla stessa entità.
-
-Puoi proporre una loro unificazione
-SOLTANTO quando le evidence lo rendono plausibile.
-
-Non dare mai per certa l'equivalenza.
-
-============================================================
-OBIETTIVO 2 – PHASE PROPOSALS
-============================================================
-
-Individua possibili fasi storico-trasformative.
-
-ATTENZIONE:
-
-UN ANNO NON È AUTOMATICAMENTE UNA FASE.
-
-Una fase deve derivare da un insieme coerente
-di evidence che suggerisce:
-
-- una configurazione;
-- una trasformazione;
-- una costruzione;
-- un ampliamento;
-- una demolizione;
-- un cambiamento funzionale;
-- una riorganizzazione del sistema;
-- un intervallo storico significativo.
-
-Se non esistono elementi sufficienti
-per proporre una fase,
-non proporla.
-
-============================================================
-CROSS-READING
-============================================================
-
-Quando possibile confronta evidence provenienti
-da documenti differenti.
-
-Considera:
-
-- concordanze;
-- differenze;
-- riferimenti cronologici;
-- trasformazioni;
-- denominazioni;
-- relazioni spaziali;
-- provenienza documentaria.
-
-La presenza di più fonti può rafforzare
-una proposta, ma non rende automaticamente
-vera l'interpretazione.
-
-============================================================
-REGOLE
-============================================================
-
-1. Usa esclusivamente le evidence fornite.
-
-2. Non utilizzare conoscenze esterne.
-
-3. Non inventare date.
-
-4. Non inventare edifici.
-
-5. Non inventare relazioni.
-
-6. Non inventare evidence_id.
-
-7. Ogni proposta DEVE indicare gli evidence_id
-   che la sostengono.
-
-8. Se una proposta è debole,
-   assegna confidence bassa.
-
-9. Se le fonti sono contraddittorie,
-   dichiaralo nella reason.
-
-10. Confidence indica la solidità documentaria
-    della PROPOSTA.
-
-11. Confidence NON rappresenta
-    una probabilità di verità storica.
-
-12. Nessuna proposta è validated.
-
-13. Il ricercatore umano deciderà
-    successivamente se:
-    - correggerla;
-    - validarla;
-    - respingerla.
-
-============================================================
-OUTPUT
-============================================================
-
-Restituisci ESCLUSIVAMENTE JSON valido.
-
-Struttura obbligatoria:
-
-{
-  "components": [
-    {
-      "proposed_name": "...",
-      "proposed_type": "...",
-      "category": "...",
-      "spatial_level": "...",
-      "description": "...",
-      "confidence": 0.0,
-      "reason": "...",
-      "evidence_ids": ["uuid", "uuid"]
-    }
-  ],
-
-  "phases": [
-    {
-      "proposed_code": "...",
-      "proposed_name": "...",
-      "start_year": null,
-      "end_year": null,
-      "chronological_range": "...",
-      "proposed_description": "...",
-      "confidence": 0.0,
-      "reason": "...",
-      "evidence_ids": ["uuid", "uuid"]
-    }
-  ]
-}
-
-Non inserire testo prima o dopo il JSON.
-"""
-
-
-# ============================================================
-# PULIZIA JSON
-# ============================================================
-
-def parse_json_response(
-    raw_text: str
-) -> dict:
-
-    text = (
-        raw_text
-        or ""
-    ).strip()
-
-    text = re.sub(
-        r"^```(?:json)?\s*",
-        "",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    text = re.sub(
-        r"\s*```$",
-        "",
-        text
-    )
-
-    text = text.strip()
-
-    try:
-        result = json.loads(text)
-
-    except json.JSONDecodeError:
-
-        start = text.find("{")
-        end = text.rfind("}")
+        # Evita anno = fase.
+        #
+        # Richiediamo almeno:
+        # - 2 evidence
+        # oppure
+        # - 2 fonti differenti.
+        if (
+            evidence_count < 2
+            and source_count < 2
+        ):
+            continue
 
         if (
-            start == -1
-            or end == -1
-            or end <= start
+            start_year is not None
+            and end_year is not None
+            and start_year == end_year
         ):
-            raise ValueError(
-                "La risposta AI non contiene "
-                "un JSON valido."
+            chronological_range = str(
+                start_year
             )
 
-        result = json.loads(
-            text[start:end + 1]
-        )
-
-    if not isinstance(result, dict):
-        raise ValueError(
-            "La risposta AI deve essere "
-            "un oggetto JSON."
-        )
-
-    if not isinstance(
-        result.get("components"),
-        list
-    ):
-        result["components"] = []
-
-    if not isinstance(
-        result.get("phases"),
-        list
-    ):
-        result["phases"] = []
-
-    return result
-
-
-# ============================================================
-# CHIAMATA OPENAI
-# ============================================================
-
-def analyze_batch(
-    evidence_batch: list[dict],
-    batch_number: int,
-    total_batches: int
-) -> dict:
-
-    evidence_json = json.dumps(
-        evidence_batch,
-        ensure_ascii=False,
-        indent=2
-    )
-
-    user_prompt = (
-        f"BATCH {batch_number}/{total_batches}\n\n"
-        "Analizza le seguenti evidence:\n\n"
-        + evidence_json
-    )
-
-    response = (
-        openai_client.responses.create(
-            model=OPENAI_MODEL,
-
-            instructions=ANALYSIS_PROMPT,
-
-            input=user_prompt
-        )
-    )
-
-    return parse_json_response(
-        response.output_text
-    )
-
-
-# ============================================================
-# CONSOLIDAMENTO MULTI-BATCH
-# ============================================================
-
-CONSOLIDATION_PROMPT = """
-Ricevi una serie di PROPOSTE PRELIMINARI
-generate da più batch dello stesso corpus documentario.
-
-Devi consolidarle.
-
-Il risultato rimane una PROPOSTA AI,
-non conoscenza validata.
-
-COMPONENTI:
-
-- unisci duplicati evidenti;
-- conserva tutte le evidence_id pertinenti;
-- non fondere entità differenti senza supporto;
-- non trasformare termini generici in componenti
-  se il corpus non lo sostiene.
-
-FASI:
-
-- non trasformare ogni anno in una fase;
-- unisci candidati cronologicamente e
-  documentalmente coerenti;
-- mantieni separate configurazioni differenti;
-- non inventare date mancanti.
-
-Non utilizzare informazioni esterne.
-
-Ogni evidence_id restituito deve provenire
-dalle proposte ricevute.
-
-Restituisci esclusivamente:
-
-{
-  "components": [...],
-  "phases": [...]
-}
-
-con gli stessi campi delle proposte originali.
-"""
-
-
-def consolidate_results(
-    preliminary_results: list[dict]
-) -> dict:
-
-    if len(preliminary_results) == 1:
-        return preliminary_results[0]
-
-    compact = {
-        "batch_results":
-            preliminary_results
-    }
-
-    response = (
-        openai_client.responses.create(
-            model=OPENAI_MODEL,
-
-            instructions=CONSOLIDATION_PROMPT,
-
-            input=json.dumps(
-                compact,
-                ensure_ascii=False
-            )
-        )
-    )
-
-    return parse_json_response(
-        response.output_text
-    )
-
-
-# ============================================================
-# UTILITÀ
-# ============================================================
-
-def sanitize_evidence_ids(
-    values,
-    valid_ids: set[str]
-) -> list[str]:
-
-    if not isinstance(values, list):
-        return []
-
-    result = []
-
-    for value in values:
-
-        if (
-            isinstance(value, str)
-            and value in valid_ids
+        elif (
+            start_year is not None
+            and end_year is not None
         ):
-            result.append(value)
-
-    return sorted(set(result))
-
-
-def safe_confidence(
-    value
-) -> Optional[float]:
-
-    try:
-        number = float(value)
-
-    except (
-        TypeError,
-        ValueError
-    ):
-        return None
-
-    return round(
-        max(
-            0.0,
-            min(
-                number,
-                1.0
+            chronological_range = (
+                f"{start_year}–{end_year}"
             )
-        ),
-        3
-    )
 
+        elif start_year is not None:
+            chronological_range = (
+                f"da {start_year}"
+            )
 
-def safe_year(
-    value
-) -> Optional[int]:
+        elif end_year is not None:
+            chronological_range = (
+                f"fino a {end_year}"
+            )
 
-    if value in (
-        None,
-        "",
-        "null"
-    ):
-        return None
+        else:
+            chronological_range = None
 
-    try:
-        return int(value)
+        transformation_label = ", ".join(
+            transformations
+        )
 
-    except (
-        TypeError,
-        ValueError
-    ):
-        return None
+        if chronological_range:
+            proposed_name = (
+                "Candidate transformation phase "
+                f"{chronological_range}"
+            )
+        else:
+            proposed_name = (
+                "Candidate transformation phase"
+            )
 
+        proposed_code = (
+            f"PH_{start_year or 'X'}_"
+            f"{end_year or 'X'}"
+        )
 
-def normalize_for_key(
-    value
-) -> str:
+        confidence = min(
+            1.0,
+            0.35
+            + min(evidence_count, 5) * 0.09
+            + min(source_count, 3) * 0.10
+        )
 
-    if value is None:
-        return ""
+        reason = (
+            "Proposta rule-based basata su "
+            f"{evidence_count} evidence, "
+            f"{source_count} fonte/i e sui seguenti "
+            "indicatori espliciti di trasformazione: "
+            f"{transformation_label}. "
+            "La coincidenza cronologica non viene "
+            "considerata automaticamente una fase: "
+            "la proposta richiede validazione del ricercatore."
+        )
 
-    return re.sub(
-        r"\s+",
-        " ",
-        str(value).strip().lower()
-    )
+        proposals.append(
+            {
+                "proposed_code":
+                    proposed_code,
+
+                "proposed_name":
+                    proposed_name,
+
+                "start_year":
+                    start_year,
+
+                "end_year":
+                    end_year,
+
+                "chronological_range":
+                    chronological_range,
+
+                "proposed_description":
+                    (
+                        "Cluster cronologico-trasformativo "
+                        "candidato ottenuto dal confronto "
+                        "automatico delle evidence."
+                    ),
+
+                "confidence":
+                    round(confidence, 3),
+
+                "reason":
+                    reason,
+
+                "evidence_ids":
+                    evidence_ids,
+            }
+        )
+
+    return proposals
 
 
 # ============================================================
-# SOURCE KEY
+# SOURCE KEYS
 # ============================================================
 
 def component_source_key(
     proposal: dict,
     evidence_ids: list[str]
 ) -> str:
-    """
-    Genera una chiave stabile per una proposta di componente.
-
-    La chiave NON dipende dal proposed_name,
-    perché il nome può cambiare tra due esecuzioni AI.
-
-    Dipende invece da:
-    - evidence documentarie che sostengono la proposta;
-    - tipo di componente;
-    - categoria;
-    - livello spaziale.
-
-    In questo modo:
-    "Gran Filanda"
-    "Filanda Grande"
-    "Real Filanda"
-
-    possono continuare a riferirsi alla stessa proposta
-    se il supporto documentario e la classificazione
-    rimangono gli stessi.
-    """
 
     normalized_evidence_ids = "|".join(
         sorted(set(evidence_ids))
@@ -860,19 +737,25 @@ def component_source_key(
         [
             "component",
 
-            normalize_for_key(
+            normalize_text(
+                proposal.get(
+                    "canonical_key"
+                )
+            ),
+
+            normalize_text(
                 proposal.get(
                     "proposed_type"
                 )
             ),
 
-            normalize_for_key(
+            normalize_text(
                 proposal.get(
                     "category"
                 )
             ),
 
-            normalize_for_key(
+            normalize_text(
                 proposal.get(
                     "spatial_level"
                 )
@@ -887,51 +770,34 @@ def component_source_key(
     ).hexdigest()[:24]
 
     return f"CMP_{digest}"
-    return f"CMP_{digest}"
 
 
 def phase_source_key(
     proposal: dict,
     evidence_ids: list[str]
 ) -> str:
-    """
-    Genera una chiave stabile per una proposta di fase.
-
-    La chiave NON dipende dal proposed_name.
-
-    La stessa fase potrebbe infatti essere denominata
-    diversamente dall'AI in esecuzioni successive.
-
-    La chiave dipende da:
-    - evidence documentarie;
-    - start_year;
-    - end_year.
-
-    Il nome resta quindi modificabile senza
-    modificare l'identità tecnica della proposta.
-    """
-
-    normalized_evidence_ids = "|".join(
-        sorted(set(evidence_ids))
-    )
 
     raw = "|".join(
         [
             "phase",
 
-            normalize_for_key(
+            normalize_text(
                 proposal.get(
                     "start_year"
                 )
             ),
 
-            normalize_for_key(
+            normalize_text(
                 proposal.get(
                     "end_year"
                 )
             ),
 
-            normalized_evidence_ids,
+            "|".join(
+                sorted(
+                    set(evidence_ids)
+                )
+            ),
         ]
     )
 
@@ -941,8 +807,9 @@ def phase_source_key(
 
     return f"PHA_{digest}"
 
+
 # ============================================================
-# RICERCA PROPOSTA ESISTENTE
+# EXISTING PROPOSALS
 # ============================================================
 
 def find_component_proposal(
@@ -998,7 +865,7 @@ def find_phase_proposal(
 
 
 # ============================================================
-# RELAZIONI COMPONENT PROPOSAL ↔ EVIDENCE
+# LINKS
 # ============================================================
 
 def component_link_exists(
@@ -1063,10 +930,6 @@ def link_component_evidence(
         )
 
 
-# ============================================================
-# RELAZIONI PHASE PROPOSAL ↔ EVIDENCE
-# ============================================================
-
 def phase_link_exists(
     proposal_id: str,
     evidence_id: str
@@ -1130,67 +993,41 @@ def link_phase_evidence(
 
 
 # ============================================================
-# SALVATAGGIO COMPONENT PROPOSAL
+# SAVE COMPONENT
 # ============================================================
 
 def save_component_proposal(
-    proposal: dict,
-    valid_ids: set[str]
+    proposal: dict
 ):
 
-    evidence_ids = (
-        sanitize_evidence_ids(
+    evidence_ids = sorted(
+        set(
             proposal.get(
-                "evidence_ids"
-            ),
-            valid_ids
-        )
-    )
-
-    # Una proposta senza evidence
-    # non viene accettata dal sistema.
-    if not evidence_ids:
-        return None, "invalid"
-
-    proposed_name = (
-        str(
-            proposal.get(
-                "proposed_name"
+                "evidence_ids",
+                []
             )
-            or ""
-        )
-        .strip()
-    )
-
-    if not proposed_name:
-        return None, "invalid"
-
-    source_key = (
-        component_source_key(
-            proposal,
-            evidence_ids
         )
     )
 
-    existing = (
-        find_component_proposal(
-            source_key
-        )
+    if not evidence_ids:
+        return "invalid"
+
+    source_key = component_source_key(
+        proposal,
+        evidence_ids
     )
 
-    explanation = (
-        proposal.get("reason")
-        or
-        "Proposta generata mediante "
-        "cross-reading AI delle evidence."
+    existing = find_component_proposal(
+        source_key
     )
 
     payload = {
+
         "source_key":
             source_key,
 
         "proposed_name":
-            proposed_name,
+            proposal["proposed_name"],
 
         "proposed_type":
             proposal.get(
@@ -1213,28 +1050,26 @@ def save_component_proposal(
             ),
 
         "proposal_origin":
-            "ai",
+            "rule_based",
 
         "ai_model":
-            OPENAI_MODEL,
+            GENERATOR_NAME,
 
         "ai_explanation":
-            explanation,
+            proposal.get(
+                "reason"
+            ),
 
         "confidence":
-            safe_confidence(
-                proposal.get(
-                    "confidence"
-                )
-            )
+            proposal.get(
+                "confidence"
+            ),
     }
 
     if existing:
 
         proposal_id = existing["id"]
 
-        # Una proposta già presa in carico
-        # dal ricercatore NON viene sovrascritta.
         if (
             existing.get(
                 "review_status"
@@ -1247,10 +1082,7 @@ def save_component_proposal(
                 evidence_ids
             )
 
-            return (
-                proposal_id,
-                "protected"
-            )
+            return "protected"
 
         (
             supabase
@@ -1270,16 +1102,10 @@ def save_component_proposal(
             evidence_ids
         )
 
-        return (
-            proposal_id,
-            "updated"
-        )
+        return "updated"
 
     payload.update(
         {
-            "parent_proposal_id":
-                None,
-
             "review_status":
                 "to_review",
 
@@ -1290,7 +1116,10 @@ def save_component_proposal(
                 None,
 
             "review_notes":
-                None
+                None,
+
+            "parent_proposal_id":
+                None,
         }
     )
 
@@ -1303,113 +1132,47 @@ def save_component_proposal(
         .execute()
     )
 
-    proposal_id = (
-        response.data[0]["id"]
-    )
+    proposal_id = response.data[0]["id"]
 
     link_component_evidence(
         proposal_id,
         evidence_ids
     )
 
-    return (
-        proposal_id,
-        "created"
-    )
+    return "created"
 
 
 # ============================================================
-# SALVATAGGIO PHASE PROPOSAL
+# SAVE PHASE
 # ============================================================
 
 def save_phase_proposal(
-    proposal: dict,
-    valid_ids: set[str]
+    proposal: dict
 ):
 
-    evidence_ids = (
-        sanitize_evidence_ids(
+    evidence_ids = sorted(
+        set(
             proposal.get(
-                "evidence_ids"
-            ),
-            valid_ids
+                "evidence_ids",
+                []
+            )
         )
     )
 
     if not evidence_ids:
-        return None, "invalid"
+        return "invalid"
 
-    proposed_name = (
-        str(
-            proposal.get(
-                "proposed_name"
-            )
-            or ""
-        )
-        .strip()
+    source_key = phase_source_key(
+        proposal,
+        evidence_ids
     )
 
-    if not proposed_name:
-        return None, "invalid"
-
-    start_year = safe_year(
-        proposal.get(
-            "start_year"
-        )
-    )
-
-    end_year = safe_year(
-        proposal.get(
-            "end_year"
-        )
-    )
-
-    if (
-        start_year is not None
-        and end_year is not None
-        and start_year > end_year
-    ):
-        (
-            start_year,
-            end_year
-        ) = (
-            end_year,
-            start_year
-        )
-
-    proposal_for_key = dict(
-        proposal
-    )
-
-    proposal_for_key[
-        "start_year"
-    ] = start_year
-
-    proposal_for_key[
-        "end_year"
-    ] = end_year
-
-    source_key = (
-        phase_source_key(
-            proposal_for_key,
-            evidence_ids
-        )
-    )
-
-    existing = (
-        find_phase_proposal(
-            source_key
-        )
-    )
-
-    explanation = (
-        proposal.get("reason")
-        or
-        "Proposta di fase generata "
-        "mediante cross-reading AI."
+    existing = find_phase_proposal(
+        source_key
     )
 
     payload = {
+
         "source_key":
             source_key,
 
@@ -1419,13 +1182,19 @@ def save_phase_proposal(
             ),
 
         "proposed_name":
-            proposed_name,
+            proposal[
+                "proposed_name"
+            ],
 
         "start_year":
-            start_year,
+            proposal.get(
+                "start_year"
+            ),
 
         "end_year":
-            end_year,
+            proposal.get(
+                "end_year"
+            ),
 
         "chronological_range":
             proposal.get(
@@ -1438,27 +1207,25 @@ def save_phase_proposal(
             ),
 
         "proposal_origin":
-            "ai",
+            "rule_based",
 
         "ai_model":
-            OPENAI_MODEL,
+            GENERATOR_NAME,
 
         "ai_explanation":
-            explanation,
+            proposal.get(
+                "reason"
+            ),
 
         "confidence":
-            safe_confidence(
-                proposal.get(
-                    "confidence"
-                )
-            )
+            proposal.get(
+                "confidence"
+            ),
     }
 
     if existing:
 
-        proposal_id = (
-            existing["id"]
-        )
+        proposal_id = existing["id"]
 
         if (
             existing.get(
@@ -1472,10 +1239,7 @@ def save_phase_proposal(
                 evidence_ids
             )
 
-            return (
-                proposal_id,
-                "protected"
-            )
+            return "protected"
 
         (
             supabase
@@ -1495,10 +1259,7 @@ def save_phase_proposal(
             evidence_ids
         )
 
-        return (
-            proposal_id,
-            "updated"
-        )
+        return "updated"
 
     payload.update(
         {
@@ -1512,7 +1273,7 @@ def save_phase_proposal(
                 None,
 
             "review_notes":
-                None
+                None,
         }
     )
 
@@ -1525,88 +1286,14 @@ def save_phase_proposal(
         .execute()
     )
 
-    proposal_id = (
-        response.data[0]["id"]
-    )
+    proposal_id = response.data[0]["id"]
 
     link_phase_evidence(
         proposal_id,
         evidence_ids
     )
 
-    return (
-        proposal_id,
-        "created"
-    )
-
-
-# ============================================================
-# SALVATAGGIO COMPLESSIVO
-# ============================================================
-
-def save_ai_result(
-    result: dict,
-    evidence_rows: list[dict]
-):
-
-    valid_ids = {
-        row["id"]
-        for row in evidence_rows
-    }
-
-    stats = {
-        "component_created": 0,
-        "component_updated": 0,
-        "component_protected": 0,
-        "component_invalid": 0,
-
-        "phase_created": 0,
-        "phase_updated": 0,
-        "phase_protected": 0,
-        "phase_invalid": 0
-    }
-
-    for proposal in result.get(
-        "components",
-        []
-    ):
-
-        _, status = (
-            save_component_proposal(
-                proposal,
-                valid_ids
-            )
-        )
-
-        key = (
-            "component_"
-            + status
-        )
-
-        if key in stats:
-            stats[key] += 1
-
-    for proposal in result.get(
-        "phases",
-        []
-    ):
-
-        _, status = (
-            save_phase_proposal(
-                proposal,
-                valid_ids
-            )
-        )
-
-        key = (
-            "phase_"
-            + status
-        )
-
-        if key in stats:
-            stats[key] += 1
-
-    return stats
+    return "created"
 
 
 # ============================================================
@@ -1617,19 +1304,18 @@ def process_proposals():
 
     print("=" * 80)
     print(
-        "SAN LEUCIO – AI CROSS-READING"
+        "SAN LEUCIO – "
+        "RULE-BASED CROSS-READING"
     )
     print("=" * 80)
 
-    print(
-        f"Modello AI: "
-        f"{OPENAI_MODEL}"
-    )
-
     documents = get_documents()
 
-    evidence_rows = (
-        get_all_evidence()
+    evidence_rows = get_all_evidence()
+
+    print(
+        f"Documenti disponibili: "
+        f"{len(documents)}"
     )
 
     print(
@@ -1643,160 +1329,98 @@ def process_proposals():
             "Nessuna evidence disponibile."
         )
 
-        print(
-            "Eseguire prima il workflow "
-            "di estrazione delle evidence."
-        )
-
         return
 
-    source_ids = {
-        row.get("document_id")
-        for row in evidence_rows
-        if row.get("document_id")
-    }
-
-    print(
-        f"Fonti coinvolte: "
-        f"{len(source_ids)}"
+    component_proposals = (
+        generate_component_proposals(
+            evidence_rows
+        )
     )
 
-    prepared = build_ai_evidence(
-        evidence_rows,
-        documents
-    )
-
-    batches = split_into_batches(
-        prepared
-    )
-
-    print(
-        f"Batch AI: "
-        f"{len(batches)}"
-    )
-
-    preliminary_results = []
-
-    for index, batch in enumerate(
-        batches,
-        start=1
-    ):
-
-        print(
-            f"\nAnalisi batch "
-            f"{index}/{len(batches)} "
-            f"({len(batch)} evidence)..."
-        )
-
-        result = analyze_batch(
-            evidence_batch=batch,
-            batch_number=index,
-            total_batches=len(batches)
-        )
-
-        preliminary_results.append(
-            result
-        )
-
-        print(
-            f"   Componenti candidati: "
-            f"{len(result.get('components', []))}"
-        )
-
-        print(
-            f"   Fasi candidate: "
-            f"{len(result.get('phases', []))}"
-        )
-
-    print(
-        "\nConsolidamento "
-        "delle proposte..."
-    )
-
-    final_result = (
-        consolidate_results(
-            preliminary_results
+    phase_proposals = (
+        generate_phase_proposals(
+            evidence_rows
         )
     )
 
     print(
-        f"Component proposals finali: "
-        f"{len(final_result.get('components', []))}"
+        f"Component proposals candidate: "
+        f"{len(component_proposals)}"
     )
 
     print(
-        f"Phase proposals finali: "
-        f"{len(final_result.get('phases', []))}"
+        f"Phase proposals candidate: "
+        f"{len(phase_proposals)}"
     )
 
-    stats = save_ai_result(
-        final_result,
-        evidence_rows
-    )
+    stats = defaultdict(int)
+
+    for proposal in component_proposals:
+
+        status = save_component_proposal(
+            proposal
+        )
+
+        stats[
+            f"component_{status}"
+        ] += 1
+
+    for proposal in phase_proposals:
+
+        status = save_phase_proposal(
+            proposal
+        )
+
+        stats[
+            f"phase_{status}"
+        ] += 1
 
     print("\n" + "=" * 80)
-    print("SALVATAGGIO COMPLETATO")
+    print("RISULTATO")
     print("=" * 80)
 
     print(
-        "Component proposals create: "
+        "Component create: "
         f"{stats['component_created']}"
     )
 
     print(
-        "Component proposals aggiornate: "
+        "Component aggiornate: "
         f"{stats['component_updated']}"
     )
 
     print(
-        "Component proposals protette "
-        "(già in revisione/validate/rejected): "
+        "Component protette: "
         f"{stats['component_protected']}"
     )
 
     print(
-        "Component proposals scartate "
-        "per dati insufficienti: "
-        f"{stats['component_invalid']}"
-    )
-
-    print(
-        "Phase proposals create: "
+        "Phase create: "
         f"{stats['phase_created']}"
     )
 
     print(
-        "Phase proposals aggiornate: "
+        "Phase aggiornate: "
         f"{stats['phase_updated']}"
     )
 
     print(
-        "Phase proposals protette "
-        "(già in revisione/validate/rejected): "
+        "Phase protette: "
         f"{stats['phase_protected']}"
     )
 
     print(
-        "Phase proposals scartate "
-        "per dati insufficienti: "
-        f"{stats['phase_invalid']}"
-    )
-
-    print("\nATTENZIONE:")
-
-    print(
-        "Questi risultati sono soltanto "
-        "PROPOSTE AI."
+        "\nLe proposte sono state generate "
+        "automaticamente mediante regole esplicite."
     )
 
     print(
-        "Nessun componente e nessuna fase "
-        "sono stati inseriti nelle tabelle finali."
+        "Nessuna proposta è conoscenza validata."
     )
 
     print(
-        "Il ricercatore deve ora "
-        "revisionare le proposte in Supabase."
+        "Il ricercatore deve revisionarle "
+        "in Supabase."
     )
 
 
