@@ -1,10 +1,10 @@
-name: Generate rule-based proposals San Leucio
+name: Extract evidence San Leucio
 
 on:
   workflow_dispatch:
 
 jobs:
-  generate-proposals:
+  extract-evidence:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,8 +21,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Generate rule-based proposals
+      - name: Extract evidence
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: python process_proposals.py
+        run: python main.py
