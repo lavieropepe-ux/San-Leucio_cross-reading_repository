@@ -1,4 +1,4 @@
-name: Genera proposte AI fasi e componenti San Leucio
+name: Generate AI-generated proposals San Leucio
 
 on:
   workflow_dispatch:
