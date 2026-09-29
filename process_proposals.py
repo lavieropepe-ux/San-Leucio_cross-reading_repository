@@ -49,18 +49,23 @@ VALID_REVIEW_STATUSES = {
 
 COMPONENT_NORMALIZATION = {
     "belvedere": "Belvedere",
+
     "filanda": "Filanda",
     "filanda reale": "Filanda Reale",
     "gran filanda": "Gran Filanda",
+
     "setificio": "Setificio",
     "setificio di san leucio": "Setificio di San Leucio",
+
     "opificio": "Opificio",
     "opificio borbonico": "Opificio borbonico",
+
     "fabbrica della seta": "Fabbrica della seta",
 
     "salone": "Salone",
     "salone delle feste": "Salone delle Feste",
     "salone da ballo": "Salone da Ballo",
+
     "sala del trono": "Sala del Trono",
 
     "residenza reale": "Residenza reale",
@@ -91,8 +96,13 @@ COMPONENT_NORMALIZATION = {
 }
 
 
-# Termini che rimangono evidence documentarie,
-# ma non diventano automaticamente componenti autonomi.
+# ============================================================
+# GENERIC ELEMENTS
+# ============================================================
+#
+# Questi termini possono rimanere nelle evidence, ma non
+# diventano automaticamente componenti autonomi.
+# ============================================================
 
 GENERIC_ELEMENTS = {
     "volta",
@@ -108,7 +118,9 @@ GENERIC_ELEMENTS = {
     "prospetto",
     "copertura",
     "tetto",
+
     "bagno",
+
     "trattura",
     "tessitura",
     "filatura",
@@ -174,7 +186,7 @@ TERRITORIAL_COMPONENTS = {
 
 def normalize_text(value: Optional[str]) -> str:
     """
-    Normalizza spazi e maiuscole/minuscole
+    Normalizza testo, spazi e maiuscole/minuscole
     per confronti deterministici.
     """
 
@@ -189,8 +201,8 @@ def normalize_text(value: Optional[str]) -> str:
 
 def split_elements(value: Optional[str]) -> List[str]:
     """
-    Divide il campo evidence.element quando contiene
-    più elementi separati da virgole o punto e virgola.
+    Divide evidence.element quando contiene più elementi
+    separati da virgole o punto e virgola.
     """
 
     if not value:
@@ -201,7 +213,11 @@ def split_elements(value: Optional[str]) -> List[str]:
     result = []
 
     for part in parts:
-        cleaned = re.sub(r"\s+", " ", part).strip()
+        cleaned = re.sub(
+            r"\s+",
+            " ",
+            part,
+        ).strip()
 
         if cleaned:
             result.append(cleaned)
@@ -210,6 +226,9 @@ def split_elements(value: Optional[str]) -> List[str]:
 
 
 def to_int(value: Any) -> Optional[int]:
+    """
+    Converte un valore in intero quando possibile.
+    """
 
     if value is None or value == "":
         return None
@@ -227,15 +246,14 @@ def fetch_all(
 ) -> List[Dict[str, Any]]:
     """
     Legge tutte le righe di una tabella Supabase
-    usando la paginazione.
+    usando paginazione.
     """
 
-    rows = []
+    rows: List[Dict[str, Any]] = []
 
     start = 0
 
     while True:
-
         end = start + page_size - 1
 
         response = (
@@ -262,8 +280,8 @@ def distinct_source_count(
     evidence_rows: List[Dict[str, Any]],
 ) -> int:
     """
-    Conta quante fonti/documenti differenti
-    sostengono la proposta.
+    Conta quanti documenti distinti sostengono
+    una proposta.
     """
 
     document_ids = {
@@ -280,7 +298,7 @@ def deterministic_confidence(
     source_count: int,
 ) -> float:
     """
-    Punteggio deterministico di supporto documentario.
+    Calcola un indicatore deterministico di supporto.
 
     NON rappresenta la probabilità che la proposta
     sia storicamente vera.
@@ -309,6 +327,10 @@ def component_source_key(
     spatial_level: str,
     evidence_ids: List[str],
 ) -> str:
+    """
+    Genera una chiave deterministica per la proposta
+    di componente.
+    """
 
     raw = "|".join(
         [
@@ -332,6 +354,10 @@ def phase_source_key(
     end_year: Optional[int],
     evidence_ids: List[str],
 ) -> str:
+    """
+    Genera una chiave deterministica per la proposta
+    di fase.
+    """
 
     raw = "|".join(
         [
@@ -355,9 +381,12 @@ def phase_source_key(
 def classify_component(
     canonical_name: str,
 ) -> Tuple[str, str, str]:
+    """
+    Classifica automaticamente il candidato
+    usando categorie controllate.
+    """
 
     if canonical_name in BUILDING_COMPONENTS:
-
         return (
             "building",
             "architectural",
@@ -365,7 +394,6 @@ def classify_component(
         )
 
     if canonical_name in SPACE_COMPONENTS:
-
         return (
             "space",
             "architectural",
@@ -373,7 +401,6 @@ def classify_component(
         )
 
     if canonical_name in INFRASTRUCTURE_COMPONENTS:
-
         return (
             "infrastructure",
             "technical_infrastructure",
@@ -381,7 +408,6 @@ def classify_component(
         )
 
     if canonical_name in PRODUCTIVE_COMPONENTS:
-
         return (
             "productive_element",
             "productive",
@@ -389,7 +415,6 @@ def classify_component(
         )
 
     if canonical_name in TERRITORIAL_COMPONENTS:
-
         return (
             "territorial_element",
             "urban_territorial",
@@ -410,12 +435,18 @@ def classify_component(
 def build_component_candidates(
     evidence_rows: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
+    """
+    Genera component proposals a partire dalle evidence.
+    """
 
-    grouped = defaultdict(dict)
+    grouped: Dict[
+        str,
+        Dict[str, Dict[str, Any]],
+    ] = defaultdict(dict)
 
     for evidence in evidence_rows:
 
-        # Evidence respinte dal ricercatore
+        # Evidence rifiutate dal ricercatore
         # non vengono utilizzate.
         if evidence.get("review_status") == "rejected":
             continue
@@ -438,8 +469,9 @@ def build_component_candidates(
             if not normalized:
                 continue
 
-            # Termini generici restano evidence,
-            # ma non diventano component proposals.
+            # Termini troppo generici:
+            # rimangono evidence ma non producono
+            # component proposals.
             if normalized in GENERIC_ELEMENTS:
                 continue
 
@@ -449,8 +481,9 @@ def build_component_candidates(
                 )
             )
 
-            # Solo termini del vocabolario controllato
-            # possono generare automaticamente una proposta.
+            # Solo gli elementi presenti nel vocabolario
+            # controllato generano automaticamente
+            # un candidato.
             if not canonical_name:
                 continue
 
@@ -458,8 +491,7 @@ def build_component_candidates(
                 canonical_name
             ][str(evidence_id)] = evidence
 
-
-    candidates = []
+    candidates: List[Dict[str, Any]] = []
 
     for canonical_name, evidence_map in grouped.items():
 
@@ -487,80 +519,61 @@ def build_component_candidates(
             canonical_name
         )
 
-        confidence = (
-            deterministic_confidence(
-                evidence_count,
-                source_count,
-            )
+        confidence = deterministic_confidence(
+            evidence_count,
+            source_count,
         )
 
         reason = (
-            f"Proposta rule-based ottenuta "
-            f"raggruppando {evidence_count} "
-            f"evidence documentarie "
+            f"Proposta rule-based ottenuta raggruppando "
+            f"{evidence_count} evidence documentarie "
             f"riconducibili al termine controllato "
             f"'{canonical_name}', provenienti da "
             f"{source_count} fonte/i. "
-            f"La proposta richiede verifica, "
-            f"eventuale correzione e validazione "
-            f"da parte del ricercatore."
+            f"La proposta richiede verifica, eventuale "
+            f"correzione e validazione da parte del "
+            f"ricercatore."
         )
 
         description = (
             f"Componente candidato emerso dal "
-            f"raggruppamento automatico delle "
-            f"evidence associate a "
-            f"'{canonical_name}'."
+            f"raggruppamento automatico delle evidence "
+            f"associate a '{canonical_name}'."
         )
 
         candidates.append(
             {
-
-                "source_key":
-                    component_source_key(
-                        canonical_name,
-                        proposed_type,
-                        category,
-                        spatial_level,
-                        evidence_ids,
-                    ),
-
-                "proposed_name":
+                "source_key": component_source_key(
                     canonical_name,
-
-                "proposed_type":
                     proposed_type,
-
-                "category":
                     category,
-
-                "spatial_level":
                     spatial_level,
-
-                "description":
-                    description,
-
-                "proposal_origin":
-                    "rule_based",
-
-                # Campi mantenuti solo per
-                # compatibilità con lo schema esistente.
-                "ai_model":
-                    GENERATOR_NAME,
-
-                "ai_explanation":
-                    reason,
-
-                "confidence":
-                    confidence,
-
-                # Ogni nuova proposta nasce sempre
-                # da revisionare.
-                "review_status":
-                    DEFAULT_REVIEW_STATUS,
-
-                "evidence_ids":
                     evidence_ids,
+                ),
+
+                "proposed_name": canonical_name,
+
+                "proposed_type": proposed_type,
+
+                "category": category,
+
+                "spatial_level": spatial_level,
+
+                "description": description,
+
+                "proposal_origin": "rule_based",
+
+                # Campi legacy mantenuti per
+                # compatibilità con lo schema Supabase.
+                "ai_model": GENERATOR_NAME,
+
+                "ai_explanation": reason,
+
+                "confidence": confidence,
+
+                "review_status": DEFAULT_REVIEW_STATUS,
+
+                "evidence_ids": evidence_ids,
             }
         )
 
@@ -579,6 +592,10 @@ def build_component_candidates(
 def has_explicit_transformation(
     evidence: Dict[str, Any],
 ) -> bool:
+    """
+    Verifica se l'evidence contiene un'indicazione
+    esplicita di trasformazione.
+    """
 
     value = evidence.get(
         "transformation_type"
@@ -593,18 +610,23 @@ def has_explicit_transformation(
 def build_phase_candidates(
     evidence_rows: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
+    """
+    Genera proposte di fase solo da evidence
+    cronologiche associate a trasformazioni esplicite.
+    """
 
-    grouped = defaultdict(dict)
+    grouped: Dict[
+        Tuple[Optional[int], Optional[int]],
+        Dict[str, Dict[str, Any]],
+    ] = defaultdict(dict)
 
     for evidence in evidence_rows:
 
-        if evidence.get(
-            "review_status"
-        ) == "rejected":
+        if evidence.get("review_status") == "rejected":
             continue
 
-        # Per generare una phase proposal
-        # non basta trovare una data.
+        # Una data, da sola, non è sufficiente
+        # a produrre una phase proposal.
         if not has_explicit_transformation(
             evidence
         ):
@@ -638,8 +660,7 @@ def build_phase_candidates(
             key
         ][str(evidence_id)] = evidence
 
-
-    candidates = []
+    candidates: List[Dict[str, Any]] = []
 
     for (
         start_year,
@@ -662,21 +683,19 @@ def build_phase_candidates(
             supporting_evidence
         )
 
-        # Una singola evidence datata
-        # non diventa automaticamente una fase.
+        # Una sola evidence non viene automaticamente
+        # trasformata in fase storica.
         if (
             evidence_count < 2
             and source_count < 2
         ):
             continue
 
-
         if (
             start_year is not None
             and end_year is not None
             and end_year != start_year
         ):
-
             proposed_name = (
                 f"Candidate transformation phase "
                 f"{start_year}-{end_year}"
@@ -691,7 +710,6 @@ def build_phase_candidates(
             )
 
         else:
-
             year = (
                 start_year
                 if start_year is not None
@@ -711,12 +729,9 @@ def build_phase_candidates(
                 year
             )
 
-
-        confidence = (
-            deterministic_confidence(
-                evidence_count,
-                source_count,
-            )
+        confidence = deterministic_confidence(
+            evidence_count,
+            source_count,
         )
 
         reason = (
@@ -726,10 +741,10 @@ def build_phase_candidates(
             f"e indicazione esplicita di trasformazione, "
             f"provenienti da {source_count} fonte/i. "
             f"La presenza di una data non viene "
-            f"considerata, da sola, sufficiente "
-            f"a definire una fase storica. "
-            f"La proposta deve essere verificata "
-            f"e validata dal ricercatore."
+            f"considerata, da sola, sufficiente a "
+            f"definire una fase storica. "
+            f"La proposta deve essere verificata e "
+            f"validata dal ricercatore."
         )
 
         description = (
@@ -741,25 +756,19 @@ def build_phase_candidates(
 
         candidates.append(
             {
-
-                "source_key":
-                    phase_source_key(
-                        start_year,
-                        end_year,
-                        evidence_ids,
-                    ),
-
-                "proposed_code":
-                    proposed_code,
-
-                "proposed_name":
-                    proposed_name,
-
-                "start_year":
+                "source_key": phase_source_key(
                     start_year,
-
-                "end_year":
                     end_year,
+                    evidence_ids,
+                ),
+
+                "proposed_code": proposed_code,
+
+                "proposed_name": proposed_name,
+
+                "start_year": start_year,
+
+                "end_year": end_year,
 
                 "chronological_range":
                     chronological_range,
@@ -770,8 +779,8 @@ def build_phase_candidates(
                 "proposal_origin":
                     "rule_based",
 
-                # Campi legacy mantenuti
-                # per compatibilità.
+                # Campi legacy mantenuti per
+                # compatibilità con lo schema.
                 "ai_model":
                     GENERATOR_NAME,
 
@@ -788,7 +797,6 @@ def build_phase_candidates(
                     evidence_ids,
             }
         )
-
 
     candidates.sort(
         key=lambda row: (
@@ -810,6 +818,10 @@ def build_phase_candidates(
 def validate_existing_review_status(
     status: Optional[str],
 ) -> str:
+    """
+    Verifica che lo stato presente nel database
+    appartenga ai quattro stati previsti.
+    """
 
     status = (
         status
@@ -817,15 +829,109 @@ def validate_existing_review_status(
     )
 
     if status not in VALID_REVIEW_STATUSES:
-
         raise ValueError(
-            "review_status non valido "
-            f"trovato nel database: {status!r}. "
+            "review_status non valido trovato "
+            f"nel database: {status!r}. "
             "Valori ammessi: "
-            f"{sorted(VALID_REVIEW_STATUSES)}"
+            "to_review, in_review, "
+            "validated, rejected."
         )
 
     return status
+
+
+# ============================================================
+# COMPONENT PROPOSAL ↔ EVIDENCE
+# ============================================================
+
+def link_component_evidence(
+    proposal_id: str,
+    evidence_ids: List[str],
+) -> None:
+    """
+    Collega una component proposal alle evidence
+    che la sostengono.
+    """
+
+    if not evidence_ids:
+        return
+
+    rows = [
+        {
+            "component_proposal_id":
+                proposal_id,
+
+            "evidence_id":
+                evidence_id,
+
+            "relation_type":
+                "supports",
+        }
+
+        for evidence_id in evidence_ids
+    ]
+
+    (
+        supabase
+        .table(
+            "component_proposal_evidence"
+        )
+        .upsert(
+            rows,
+            on_conflict=(
+                "component_proposal_id,"
+                "evidence_id"
+            ),
+        )
+        .execute()
+    )
+
+
+# ============================================================
+# PHASE PROPOSAL ↔ EVIDENCE
+# ============================================================
+
+def link_phase_evidence(
+    proposal_id: str,
+    evidence_ids: List[str],
+) -> None:
+    """
+    Collega una phase proposal alle evidence
+    che la sostengono.
+    """
+
+    if not evidence_ids:
+        return
+
+    rows = [
+        {
+            "phase_proposal_id":
+                proposal_id,
+
+            "evidence_id":
+                evidence_id,
+
+            "relation_type":
+                "supports",
+        }
+
+        for evidence_id in evidence_ids
+    ]
+
+    (
+        supabase
+        .table(
+            "phase_proposal_evidence"
+        )
+        .upsert(
+            rows,
+            on_conflict=(
+                "phase_proposal_id,"
+                "evidence_id"
+            ),
+        )
+        .execute()
+    )
 
 
 # ============================================================
@@ -835,6 +941,15 @@ def validate_existing_review_status(
 def save_component_proposal(
     candidate: Dict[str, Any],
 ) -> Tuple[str, str]:
+    """
+    Inserisce o aggiorna una component proposal.
+
+    Solo le proposte in stato to_review
+    possono essere aggiornate automaticamente.
+
+    in_review, validated e rejected
+    sono protette.
+    """
 
     evidence_ids = candidate[
         "evidence_ids"
@@ -842,8 +957,7 @@ def save_component_proposal(
 
     payload = {
         key: value
-        for key, value
-        in candidate.items()
+        for key, value in candidate.items()
         if key != "evidence_ids"
     }
 
@@ -866,7 +980,6 @@ def save_component_proposal(
         or []
     )
 
-
     # --------------------------------------------------------
     # PROPOSTA GIÀ ESISTENTE
     # --------------------------------------------------------
@@ -885,16 +998,9 @@ def save_component_proposal(
             )
         )
 
-
-        # ====================================================
-        # PROTEZIONE DELLA REVISIONE UMANA
-        # ====================================================
-        #
-        # Se il ricercatore ha già iniziato la revisione,
-        # il generatore automatico NON modifica più
-        # la proposta.
-        #
-        # ====================================================
+        # ----------------------------------------------------
+        # PROTEZIONE REVISIONE UMANA
+        # ----------------------------------------------------
 
         if current_status in {
             "in_review",
@@ -912,10 +1018,9 @@ def save_component_proposal(
                 proposal_id,
             )
 
-
-        # ====================================================
-        # SOLO to_review PUÒ ESSERE AGGIORNATO
-        # ====================================================
+        # ----------------------------------------------------
+        # SOLO to_review VIENE AGGIORNATO
+        # ----------------------------------------------------
 
         update_payload = (
             payload.copy()
@@ -928,7 +1033,9 @@ def save_component_proposal(
         (
             supabase
             .table("component_proposals")
-            .update(update_payload)
+            .update(
+                update_payload
+            )
             .eq(
                 "id",
                 proposal_id,
@@ -945,7 +1052,6 @@ def save_component_proposal(
             "updated",
             proposal_id,
         )
-
 
     # --------------------------------------------------------
     # NUOVA PROPOSTA
@@ -964,7 +1070,6 @@ def save_component_proposal(
     )
 
     if not inserted:
-
         raise RuntimeError(
             "Inserimento component proposal "
             "fallito: "
@@ -993,6 +1098,15 @@ def save_component_proposal(
 def save_phase_proposal(
     candidate: Dict[str, Any],
 ) -> Tuple[str, str]:
+    """
+    Inserisce o aggiorna una phase proposal.
+
+    Solo to_review può essere aggiornato
+    automaticamente.
+
+    in_review, validated e rejected
+    sono protetti.
+    """
 
     evidence_ids = candidate[
         "evidence_ids"
@@ -1000,8 +1114,7 @@ def save_phase_proposal(
 
     payload = {
         key: value
-        for key, value
-        in candidate.items()
+        for key, value in candidate.items()
         if key != "evidence_ids"
     }
 
@@ -1024,6 +1137,9 @@ def save_phase_proposal(
         or []
     )
 
+    # --------------------------------------------------------
+    # PROPOSTA GIÀ ESISTENTE
+    # --------------------------------------------------------
 
     if existing:
 
@@ -1039,9 +1155,9 @@ def save_phase_proposal(
             )
         )
 
-
-        # Non sovrascrivere mai una proposta
-        # già presa in carico dal ricercatore.
+        # ----------------------------------------------------
+        # PROTEZIONE REVISIONE UMANA
+        # ----------------------------------------------------
 
         if current_status in {
             "in_review",
@@ -1059,9 +1175,9 @@ def save_phase_proposal(
                 proposal_id,
             )
 
-
-        # Solo to_review può essere
-        # aggiornato automaticamente.
+        # ----------------------------------------------------
+        # SOLO to_review VIENE AGGIORNATO
+        # ----------------------------------------------------
 
         update_payload = (
             payload.copy()
@@ -1094,8 +1210,9 @@ def save_phase_proposal(
             proposal_id,
         )
 
-
-    # Nuova proposta
+    # --------------------------------------------------------
+    # NUOVA PROPOSTA
+    # --------------------------------------------------------
 
     insert_response = (
         supabase
@@ -1110,7 +1227,6 @@ def save_phase_proposal(
     )
 
     if not inserted:
-
         raise RuntimeError(
             "Inserimento phase proposal "
             "fallito: "
@@ -1133,98 +1249,14 @@ def save_phase_proposal(
 
 
 # ============================================================
-# COMPONENT PROPOSAL ↔️ EVIDENCE
-# ============================================================
-
-def link_component_evidence(
-    proposal_id: str,
-    evidence_ids: List[str],
-) -> None:
-
-    if not evidence_ids:
-        return
-
-    rows = [
-        {
-            "component_proposal_id":
-                proposal_id,
-
-            "evidence_id":
-                evidence_id,
-
-            "relation_type":
-                "supports",
-        }
-
-        for evidence_id
-        in evidence_ids
-    ]
-
-    (
-        supabase
-        .table(
-            "component_proposal_evidence"
-        )
-        .upsert(
-            rows,
-            on_conflict=(
-                "component_proposal_id,"
-                "evidence_id"
-            ),
-        )
-        .execute()
-    )
-
-
-# ============================================================
-# PHASE PROPOSAL ↔️ EVIDENCE
-# ============================================================
-
-def link_phase_evidence(
-    proposal_id: str,
-    evidence_ids: List[str],
-) -> None:
-
-    if not evidence_ids:
-        return
-
-    rows = [
-        {
-            "phase_proposal_id":
-                proposal_id,
-
-            "evidence_id":
-                evidence_id,
-
-            "relation_type":
-                "supports",
-        }
-
-        for evidence_id
-        in evidence_ids
-    ]
-
-    (
-        supabase
-        .table(
-            "phase_proposal_evidence"
-        )
-        .upsert(
-            rows,
-            on_conflict=(
-                "phase_proposal_id,"
-                "evidence_id"
-            ),
-        )
-        .execute()
-    )
-
-
-# ============================================================
 # MAIN PROCESS
 # ============================================================
 
-def process_proposals():
+def process_proposals() -> None:
+    """
+    Esegue l'intera generazione rule-based
+    delle component proposals e phase proposals.
+    """
 
     documents = fetch_all(
         "documents"
@@ -1234,22 +1266,13 @@ def process_proposals():
         "evidence"
     )
 
-
-    # Evidence esplicitamente respinte
-    # dal ricercatore non partecipano
+    # Evidence respinte non partecipano
     # più alla generazione.
-
     usable_evidence = [
         row
-
-        for row
-        in all_evidence
-
-        if row.get(
-            "review_status"
-        ) != "rejected"
+        for row in all_evidence
+        if row.get("review_status") != "rejected"
     ]
-
 
     component_candidates = (
         build_component_candidates(
@@ -1262,7 +1285,6 @@ def process_proposals():
             usable_evidence
         )
     )
-
 
     print("=" * 72)
 
@@ -1295,15 +1317,8 @@ def process_proposals():
 
     print()
 
-
-    component_stats = defaultdict(
-        int
-    )
-
-    phase_stats = defaultdict(
-        int
-    )
-
+    component_stats = defaultdict(int)
+    phase_stats = defaultdict(int)
 
     # ========================================================
     # SAVE COMPONENT PROPOSALS
@@ -1328,7 +1343,6 @@ def process_proposals():
             f"{proposal_id}"
         )
 
-
     # ========================================================
     # SAVE PHASE PROPOSALS
     # ========================================================
@@ -1352,7 +1366,6 @@ def process_proposals():
             f"{proposal_id}"
         )
 
-
     # ========================================================
     # SUMMARY
     # ========================================================
@@ -1360,11 +1373,8 @@ def process_proposals():
     print()
 
     print("=" * 72)
-
     print("RIEPILOGO")
-
     print("=" * 72)
-
 
     print(
         "Component proposals -> "
@@ -1376,7 +1386,6 @@ def process_proposals():
         f"{component_stats['protected']}"
     )
 
-
     print(
         "Phase proposals     -> "
         f"inserted: "
@@ -1387,12 +1396,9 @@ def process_proposals():
         f"{phase_stats['protected']}"
     )
 
-
     print()
 
-    print(
-        "REVIEW WORKFLOW:"
-    )
+    print("REVIEW WORKFLOW:")
 
     print(
         "to_review "
@@ -1408,17 +1414,20 @@ def process_proposals():
     print()
 
     print(
-        "Gli stati in_review, "
-        "validated e rejected sono "
-        "controllati dal ricercatore "
-        "e non vengono sovrascritti "
-        "dai rerun automatici."
+        "Gli stati in_review, validated e rejected "
+        "sono controllati dal ricercatore e non "
+        "vengono sovrascritti dai rerun automatici."
     )
 
 
 # ============================================================
 # START
 # ============================================================
+#
+# ATTENZIONE:
+# devono esserci DUE underscore prima e dopo
+# sia di name sia di main.
+# ============================================================
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     process_proposals()
