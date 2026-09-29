@@ -1,10 +1,10 @@
-name: Generate AI-generated proposals San Leucio
+name: Generate proposals San Leucio
 
 on:
   workflow_dispatch:
 
 jobs:
-  generate-ai-proposals:
+  generate-proposals:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,11 +21,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Generate AI-generated proposals
+      - name: Generate proposals
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: gpt-5.6-luna
         run: python process_proposals.py
-
